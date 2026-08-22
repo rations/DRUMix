@@ -206,7 +206,7 @@ void FileBrowser::draw(Canvas &c)
 FileBrowser::Result FileBrowser::handleClick(float x, float y)
 {
     if (!mOpen)
-        return Result::None;
+        return Result::Ignored;
 
     // Clicking outside the card, or on the close cross, dismisses.
     const Rect panel(kPanelX, kPanelY, kPanelW, kPanelH);

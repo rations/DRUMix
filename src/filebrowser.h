@@ -26,8 +26,10 @@ class FileBrowser
 {
 public:
     // What a click did, so the panel knows whether to repaint or act.
+    // Not `None`: Xlib #defines that, and this header is routinely included
+    // alongside one that pulls in Xlib.h.
     enum class Result {
-        None,     // click was outside the browser, or on nothing
+        Ignored,  // click was outside the browser, or on nothing
         Handled,  // consumed; repaint
         Chosen,   // a file was picked; read chosenPath(), browser is closed
         Cancelled // dismissed without choosing
