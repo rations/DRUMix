@@ -33,6 +33,17 @@ void noteName(int note, char *out, size_t outSize)
         std::snprintf(out, outSize, "%s%d (%d)", kNames[note % 12], note / 12 - 1, note);
 }
 
+// The same name without the MIDI number, for the narrow rack column.
+void noteNameShort(int note, char *out, size_t outSize)
+{
+    static const char *kNames[12] = {"C",  "C#", "D",  "D#", "E",  "F",
+                                     "F#", "G",  "G#", "A",  "A#", "B"};
+    if (note < 0 || note > 127)
+        std::snprintf(out, outSize, "\u2014");
+    else
+        std::snprintf(out, outSize, "%s%d", kNames[note % 12], note / 12 - 1);
+}
+
 cairo_surface_t *padSprite(ImageCache &images, int pad, const char *state)
 {
     char name[64];
@@ -110,12 +121,11 @@ void drawPads(Canvas &c, ImageCache &images, const PanelState &s)
     }
 }
 
-void drawButton(Canvas &c, const PanelState &s, int index, bool lit, bool enabled)
+// The one button look, used by the strip, the rack rows and the rack footer.
+// `lit` is the MIDI-learn state, which takes over the whole button.
+void drawButton(Canvas &c, const Rect &r, const char *label, float fontSize, bool pressed, bool lit,
+                bool enabled)
 {
-    const geo::ButtonSpec &spec = geo::kButtons[index];
-    const Rect r = buttonRect(index);
-    const bool pressed = (s.pressedButton == index);
-
     c.setColor(lit ? geo::kArmColor : (pressed ? geo::kSeparator : geo::kPadBody),
                enabled ? 255 : 150);
     c.fillRoundRect(r, kCornerRadius);
@@ -124,10 +134,16 @@ void drawButton(Canvas &c, const PanelState &s, int index, bool lit, bool enable
     c.strokeRoundRect(r, kCornerRadius);
 
     c.setFont(Font::Body);
-    c.setFontSize(kLabelFontSize);
+    c.setFontSize(fontSize);
     c.setColor(enabled ? geo::kTextColor : geo::kDimColor, enabled ? 255 : 160);
-    const float w = c.stringWidth(spec.label);
-    c.drawString(spec.label, r.centerX() - w * 0.5f, r.centerY() + kBaselineNudge);
+    const float w = c.stringWidth(label);
+    c.drawString(label, r.centerX() - w * 0.5f, r.centerY() + fontSize * 0.36f);
+}
+
+void drawStripButton(Canvas &c, const PanelState &s, int index, bool lit, bool enabled)
+{
+    drawButton(c, buttonRect(index), geo::kButtons[index].label, kLabelFontSize,
+               s.pressedButton == index, lit, enabled);
 }
 
 void drawVolume(Canvas &c, const PanelState &s)
@@ -200,14 +216,18 @@ void drawStrip(Canvas &c, const PanelState &s)
     }
     c.drawString(text, static_cast<float>(geo::kNoteLabelX), baseline);
 
-    drawButton(c, s, geo::kLoadButton, false, true);
-    drawButton(c, s, geo::kClearButton, false, s.sampleLoaded);
-    drawButton(c, s, geo::kLearnButton, learning, true);
+    drawStripButton(c, s, geo::kLoadButton, false, true);
+    drawStripButton(c, s, geo::kClearButton, false, s.sampleLoaded);
+    drawStripButton(c, s, geo::kLearnButton, learning, true);
     drawVolume(c, s);
+
+    // The way out of the nine pads: the rack page reaches every slot.
+    drawButton(c, expandButtonRect(), "Expand kit \u203A", kLabelFontSize,
+               s.pressedButton == geo::kButtonCount, false, true);
 
     c.setFont(Font::Title);
     c.setFontSize(13.0f);
-    c.setColor(geo::kSeparator);
+    c.setColor(geo::kTitleColor);
     c.drawString("DRUMix", static_cast<float>(geo::kTitleX),
                  static_cast<float>(geo::kTitleBaseline));
 }
@@ -226,6 +246,212 @@ void drawPanel(Canvas &c, ImageCache &images, const PanelState &state)
 
     drawPads(c, images, state);
     drawStrip(c, state);
+}
+
+//------------------------------------------------------------------------
+// The kit rack page
+//------------------------------------------------------------------------
+namespace
+{
+constexpr float kRackFontSize = 11.0f;
+constexpr float kRackNudge = kRackFontSize * 0.36f;
+
+void drawRackHeader(Canvas &c, const RackState &s)
+{
+    c.setFont(Font::Title);
+    c.setFontSize(20.0f);
+    c.setColor(geo::kTextColor);
+    c.drawString("KIT RACK", static_cast<float>(geo::kRackTitleX),
+                 static_cast<float>(geo::kRackTitleBaseline));
+
+    char text[64];
+    std::snprintf(text, sizeof(text), "%d of %d slots shown", s.slotCount, s.maxSlots);
+    c.setFont(Font::Body);
+    c.setFontSize(kRackFontSize);
+    c.setColor(geo::kDimColor);
+    c.drawString(text, static_cast<float>(geo::kRackCountX),
+                 static_cast<float>(geo::kRackTitleBaseline));
+
+    const Rect close = rackCloseBox();
+    c.setColor(s.pressedControl == kRackClose ? geo::kTextColor : geo::kDimColor);
+    c.setPenSize(2.0f);
+    c.strokeLine(close.left(), close.top(), close.right(), close.bottom());
+    c.strokeLine(close.left(), close.bottom(), close.right(), close.top());
+    c.setPenSize(1.0f);
+
+    c.setColor(geo::kSeparator);
+    c.strokeLine(
+        static_cast<float>(geo::kRackRowLeft), static_cast<float>(geo::kRackHeaderRule) + 0.5f,
+        static_cast<float>(geo::kRackRowRight), static_cast<float>(geo::kRackHeaderRule) + 0.5f);
+}
+
+void drawRackVolume(Canvas &c, const Rect &row, double volume)
+{
+    const float trackX = static_cast<float>(geo::kRackVolX);
+    const float trackW = static_cast<float>(geo::kRackVolW);
+    const float trackH = static_cast<float>(geo::kRackVolTrackH);
+    const float cy = row.centerY();
+    const float filled = trackW * static_cast<float>(volume);
+
+    c.setColor(geo::kPadBody);
+    c.fillRoundRect(Rect(trackX, cy - trackH * 0.5f, trackW, trackH), trackH * 0.5f);
+    if (filled > 0.0f) {
+        c.setColor(geo::kAccent);
+        c.fillRoundRect(Rect(trackX, cy - trackH * 0.5f, filled, trackH), trackH * 0.5f);
+    }
+    c.setColor(geo::kTextColor);
+    const float knobR = static_cast<float>(geo::kRackVolKnobR);
+    c.fillEllipse(trackX + filled, cy, knobR, knobR);
+
+    char value[16];
+    std::snprintf(value, sizeof(value), "%.2f", volume);
+    c.setColor(geo::kDimColor);
+    c.drawString(value, static_cast<float>(geo::kRackVolValueX), cy + kRackNudge);
+}
+
+void drawRackRow(Canvas &c, const RackState &s, int position, const RackRow &r)
+{
+    const Rect row = rackRowRect(position);
+
+    // Zebra banding, then the trigger flash over it, so a pad firing is as
+    // visible here as it is on the kit page.
+    if ((r.slot & 1) != 0) {
+        c.setColor(geo::kPadBody, 120);
+        c.fillRect(row);
+    }
+    if (r.hitLevel > 0.0f) {
+        // A tint alone reads as "this row is selected"; the bright underline is
+        // what makes it read as a pulse.
+        c.setColor(geo::kHitGlow, static_cast<int>(r.hitLevel * 34.0f));
+        c.fillRect(row);
+        c.setColor(geo::kHitGlow, static_cast<int>(r.hitLevel * 255.0f));
+        c.fillRect(Rect(row.x, row.bottom() - 2.0f, row.w, 2.0f));
+    }
+    // The slot the kit page has selected, marked so the two pages agree.
+    if (r.slot == s.selectedSlot) {
+        c.setColor(geo::kAccent);
+        c.fillRect(Rect(row.x, row.y + 3.0f, 3.0f, row.h - 6.0f));
+    }
+
+    c.setFont(Font::Body);
+    c.setFontSize(kRackFontSize);
+    const float baseline = row.centerY() + kRackNudge;
+
+    char text[512];
+    std::snprintf(text, sizeof(text), "%02d", r.slot + 1);
+    c.setColor(geo::kDimColor);
+    c.drawString(text, static_cast<float>(geo::kRackIndexX), baseline);
+
+    if (r.name) {
+        c.setColor(geo::kTextColor);
+        std::snprintf(text, sizeof(text), "%s", r.name);
+    } else {
+        c.setColor(geo::kDimColor);
+        std::snprintf(text, sizeof(text), "Slot %d", r.slot + 1);
+    }
+    c.drawString(c.clipToWidth(text, static_cast<float>(geo::kRackNameW)).c_str(),
+                 static_cast<float>(geo::kRackNameX), baseline);
+
+    c.setColor(r.sampleLoaded ? geo::kTextColor : geo::kDimColor);
+    const char *file = r.sampleLoaded ? r.sampleName.c_str() : "(empty)";
+    c.drawString(c.clipToWidth(file, static_cast<float>(geo::kRackFileW)).c_str(),
+                 static_cast<float>(geo::kRackFileX), baseline);
+
+    drawRackVolume(c, row, r.volume);
+
+    if (r.armed) {
+        const float pulse = 0.55f + 0.45f * std::sin(static_cast<float>(s.pulsePhase) * 0.35f);
+        c.setColor(geo::kArmColor, static_cast<int>(pulse * 255.0f));
+        std::snprintf(text, sizeof(text), "listening\u2026");
+    } else {
+        c.setColor(r.note >= 0 ? geo::kTextColor : geo::kDimColor);
+        noteNameShort(r.note, text, sizeof(text));
+    }
+    c.drawString(c.clipToWidth(text, static_cast<float>(geo::kRackNoteW)).c_str(),
+                 static_cast<float>(geo::kRackNoteX), baseline);
+
+    const bool held = (s.pressedRow == r.slot);
+    for (int b = 0; b < geo::kRackButtonCount; ++b) {
+        const bool enabled = (b != geo::kRackClearButton) || r.sampleLoaded;
+        drawButton(c, rackButtonRect(position, b), geo::kRackButtons[b].label, kRackFontSize,
+                   held && s.pressedButton == b, b == geo::kRackLearnButton && r.armed, enabled);
+    }
+}
+
+// Scroll indicator: only when the list is longer than the window.
+void drawRackScrollbar(Canvas &c, const RackState &s)
+{
+    if (s.slotCount <= geo::kRackVisibleRows)
+        return;
+
+    const float top = static_cast<float>(geo::kRackRowsY);
+    const float height = static_cast<float>(geo::kRackVisibleRows * geo::kRackRowH);
+    const float w = static_cast<float>(geo::kRackScrollW);
+    const Rect track(static_cast<float>(geo::kRackScrollX), top, w, height);
+    c.setColor(geo::kPadBody);
+    c.fillRoundRect(track, w * 0.5f);
+
+    const float visible =
+        static_cast<float>(geo::kRackVisibleRows) / static_cast<float>(s.slotCount);
+    const float thumbH = height * visible < 24.0f ? 24.0f : height * visible;
+    const int maxFirst = s.slotCount - geo::kRackVisibleRows;
+    const float progress =
+        maxFirst > 0 ? static_cast<float>(s.firstRow) / static_cast<float>(maxFirst) : 0.0f;
+    c.setColor(geo::kSeparator);
+    c.fillRoundRect(Rect(track.x, top + (height - thumbH) * progress, w, thumbH), w * 0.5f);
+}
+
+void drawRackFooter(Canvas &c, const RackState &s)
+{
+    c.setColor(geo::kSeparator);
+    c.setPenSize(1.0f);
+    c.strokeLine(
+        static_cast<float>(geo::kRackRowLeft), static_cast<float>(geo::kRackFooterRule) + 0.5f,
+        static_cast<float>(geo::kRackRowRight), static_cast<float>(geo::kRackFooterRule) + 0.5f);
+
+    drawButton(c, rackAddRect(), "+ Add slot", kLabelFontSize, s.pressedControl == kRackAdd, false,
+               s.slotCount < s.maxSlots);
+    drawButton(c, rackRemoveRect(), "\u2212 Remove slot", kLabelFontSize,
+               s.pressedControl == kRackRemove, false, s.slotCount > 1);
+
+    // Removing a row only hides the slot: its sample, note and volume are kept
+    // and still play. Say so, because the button reads destructive.
+    c.setFont(Font::Body);
+    c.setFontSize(kRackFontSize);
+    c.setColor(geo::kDimColor);
+    c.drawString("Hidden slots keep their sample and keep playing \u00b7 wheel scrolls",
+                 static_cast<float>(geo::kRackHintX),
+                 static_cast<float>(geo::kRackFooterY + geo::kRackFooterH / 2) + kRackNudge);
+}
+} // namespace
+
+//------------------------------------------------------------------------
+void drawRack(Canvas &c, const RackState &state)
+{
+    c.setColor(geo::kStripBg);
+    c.fillRect(c.bounds());
+    c.setColor(geo::kSeparator);
+    c.setPenSize(1.0f);
+    c.strokeRoundRect(c.bounds().inset(8.0f), 10.0f);
+
+    drawRackHeader(c, state);
+
+    const int shown = static_cast<int>(state.rows.size()) < geo::kRackVisibleRows
+                          ? static_cast<int>(state.rows.size())
+                          : geo::kRackVisibleRows;
+    for (int i = 0; i < shown; ++i)
+        drawRackRow(c, state, i, state.rows[static_cast<size_t>(i)]);
+
+    drawRackScrollbar(c, state);
+    drawRackFooter(c, state);
+}
+
+//------------------------------------------------------------------------
+double rackVolumeForX(float x)
+{
+    const double norm =
+        (x - static_cast<float>(geo::kRackVolX)) / static_cast<double>(geo::kRackVolW);
+    return norm < 0.0 ? 0.0 : (norm > 1.0 ? 1.0 : norm);
 }
 
 //------------------------------------------------------------------------

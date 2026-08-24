@@ -41,6 +41,17 @@ Pads flash when their note fires, and the armed pad pulses while it is waiting
 for one. Samples are resampled to the host's rate when they are loaded, so a
 44.1 kHz kit plays at the right pitch in a 48 kHz session.
 
+### The kit rack
+
+Nine pads is not a whole kit for everyone, so **Expand kit** opens the rack: one
+row per slot, each with the same Load / Clear / Learn / volume as the strip.
+**+ Add slot** shows another row — up to 64 — and **− Remove slot** hides the
+last one. The mouse wheel scrolls the list, or edits a row's volume when the
+pointer is over it.
+
+Hiding a row only takes it off the list: its sample, note and volume are kept,
+and it still plays. The row count is saved with the project.
+
 The plug-in exposes Volume and Note per slot as ordinary VST3 parameters, so a
 host can automate them and its generic panel can reach all 64 slots. The sample
 path travels separately, over the plug-in's own `IDrumLoader` interface, because
