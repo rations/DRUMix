@@ -16,17 +16,36 @@
 
 // Flush-to-zero / denormals-are-zero, re-armed on every process() call: JACK
 // does not set FTZ/DAZ on client process threads.
+//
+// x86-64 needs two MXCSR bits: FTZ flushes subnormal results, DAZ subnormal
+// inputs. AArch64 needs one: FPCR bit 24 (FZ) does both, and there is no
+// separate DAZ control. The bit position is the FPCR layout table in glibc's
+// aarch64 <fpu_control.h>, which also supplies the mrs/msr accessors used here;
+// neither is a system call, so this stays RT-safe. Same code as NAMix.
 #if defined(__SSE__) || defined(__x86_64__)
 #include <pmmintrin.h>
 #include <xmmintrin.h>
 #define DRUMIX_HAVE_SSE_DENORMAL 1
+#elif defined(__aarch64__)
+#include <fpu_control.h>
+#define DRUMIX_HAVE_AARCH64_DENORMAL 1
+#else
+#error "no flush-to-zero implementation for this architecture"
 #endif
 
 static inline void drumix_set_denormal_mode(void)
 {
-#ifdef DRUMIX_HAVE_SSE_DENORMAL
+#if defined(DRUMIX_HAVE_SSE_DENORMAL)
     _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
     _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+#elif defined(DRUMIX_HAVE_AARCH64_DENORMAL)
+    // Read-modify-write: every other FPCR bit (the rounding mode above all)
+    // belongs to someone else, and a blind write would reset it.
+    constexpr fpu_control_t kFpcrFz = 1u << 24;
+    fpu_control_t fpcr;
+    _FPU_GETCW(fpcr);
+    if ((fpcr & kFpcrFz) == 0)
+        _FPU_SETCW(fpcr | kFpcrFz);
 #endif
 }
 
